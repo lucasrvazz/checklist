@@ -133,14 +133,6 @@ body{font-family:'DM Sans',sans-serif;background:var(--bg);color:var(--text);fon
 .item:hover .item-actions{display:flex}
 .del-btn{background:#fee2e2;border:1px solid #fca5a5;color:#b91c1c;border-radius:6px;padding:4px 8px;font-size:0.7rem;cursor:pointer}
 .add-btn{width:100%;border:2px dashed #cbd5e1;background:transparent;padding:10px;border-radius:8px;color:var(--slate);font-weight:600;font-size:0.8rem;cursor:pointer;margin-top:10px}
-
-/* Timeline Classes */
-.exam-row{background:var(--surface);border-radius:12px;box-shadow:0 1px 5px rgba(0,0,0,.06),0 0 0 1px var(--border);margin-bottom:9px;display:flex;align-items:stretch;overflow:hidden}
-.exam-stripe{width:5px;flex-shrink:0}
-.exam-body{flex:1;padding:11px 16px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.exam-date{font-size:.68rem;font-weight:700;font-family:'DM Mono',monospace;min-width:65px;color:var(--slate)}
-.exam-name{flex:1;font-size:.83rem;font-weight:600;min-width:150px}
-.month-sep{font-size:.68rem;font-weight:700;text-transform:uppercase;color:var(--slate-l);margin:16px 0 8px;padding-left:4px}
 </style>
 </head>
 <body>
@@ -256,8 +248,6 @@ const TEMPLATE_DISCIPLINES = [
   }
 ];
 
-const COLORS={ced:'#0d9488',neo:'#0284c7',go:'#7c3aed',pato:'#e11d48',sfc:'#059669',imago:'#d97706'};
-
 // ── STATE ──────────────────────────────────────────────────
 let userDisciplines = [];
 let userGrades = { pi: '' };
@@ -298,8 +288,6 @@ async function loadFromFirestore() {
       const data = snap.data();
       userDisciplines = data.userDisciplines || buildInitialData();
       userGrades = data.userGrades || { pi: '' };
-      
-      // Migration para o novo sistema de status numérico se vier do boolean antigo
       userDisciplines.forEach(d => d.sections.forEach(s => s.items.forEach(i => {
         if(typeof i.done === 'boolean' && i.status === undefined) i.status = i.done ? 3 : 0;
       })));
@@ -328,7 +316,7 @@ function scheduleSave() {
   }, 800);
 }
 
-// ── LÓGICA DE NOTAS (90% + 10% PI) ──────────────────────────
+// ── LÓGICA DE NOTAS (Exceção Imago) ─────────────────────────
 function getSubjectGrades(dId) {
   if(!userGrades[dId]) userGrades[dId] = {};
   return userGrades[dId];
@@ -347,37 +335,34 @@ function calcSubjectMetrics(dId) {
   const totalProvas = d.assessments.length;
   const numFaltantes = totalProvas - countPreenchido;
   const mediaParcialDasProvas = countPreenchido > 0 ? (totalSoma / countPreenchido) : 0;
-  
   const valPI = parseFloat(userGrades.pi) || 0;
   
-  // Média Atual = Média do que já fez * 0.9 + PI * 0.1
-  const mediaAtual = (mediaParcialDasProvas * 0.9) + (valPI * 0.1);
+  let mediaAtual, subMin, subMax, targetNeeded;
+
+  // AJUSTE: Imaginologia não usa PI
+  if(dId === 'imago') {
+    mediaAtual = mediaParcialDasProvas;
+    subMin = (totalSoma / totalProvas);
+    subMax = (totalSoma + (10 * numFaltantes)) / totalProvas;
+    targetNeeded = (5.0 * totalProvas) - totalSoma;
+  } else {
+    mediaAtual = (mediaParcialDasProvas * 0.9) + (valPI * 0.1);
+    subMin = (totalSoma / totalProvas) * 0.9 + (valPI * 0.1);
+    subMax = ((totalSoma + (10 * numFaltantes)) / totalProvas) * 0.9 + (valPI * 0.1);
+    targetNeeded = (((5.0 - (valPI * 0.1)) / 0.9) * totalProvas) - totalSoma;
+  }
   
-  // Min = O que já tem + 0 nas faltantes
-  const subMin = (totalSoma / totalProvas) * 0.9 + (valPI * 0.1);
-  
-  // Max = O que já tem + 10 nas faltantes
-  const maxPI = userGrades.pi === '' ? 10 : valPI; // se nao preencheu PI, max é tirando 10
-  const subMax = ((totalSoma + (10 * numFaltantes)) / totalProvas) * 0.9 + (maxPI * 0.1);
-  
-  // Situação
   let statusStr = '', statusCls = '';
   if(subMax < 5.0) { statusStr = 'Reprovado'; statusCls = 'danger'; }
   else if(subMin >= 5.0) { statusStr = 'Aprovado (MM)'; statusCls = 'ok'; }
   else {
-    // Faltam pontos nas provas restantes
-    // Equação: ((totalSoma + X) / totalProvas) * 0.9 + PI * 0.1 = 5.0
-    const pointsNeeded = (((5.0 - (valPI * 0.1)) / 0.9) * totalProvas) - totalSoma;
-    statusStr = `Faltam ${pointsNeeded.toFixed(1)} pts`;
+    statusStr = countPreenchido < totalProvas ? `Faltam ${targetNeeded.toFixed(1)} pts` : 'Reprovado';
     statusCls = 'warn';
   }
 
   return { 
-    atual: mediaAtual.toFixed(2), 
-    min: subMin.toFixed(2), 
-    max: subMax.toFixed(2), 
-    status: statusStr, 
-    cls: statusCls 
+    atual: mediaAtual.toFixed(2), min: subMin.toFixed(2), max: subMax.toFixed(2), 
+    status: statusStr, cls: statusCls 
   };
 }
 
@@ -409,11 +394,11 @@ function renderTabs() {
 
 function renderResumo() {
   const { pct } = globalProgress();
-  
   let boletimRows = userDisciplines.map(d => {
     const m = calcSubjectMetrics(d.id);
+    const notaDesc = d.id === 'imago' ? '(Média Provas)' : '(90% Provas + 10% PI)';
     return `<tr>
-      <td><b>${d.label}</b></td>
+      <td><b>${d.label}</b><br><small style="color:var(--slate)">${notaDesc}</small></td>
       <td>${m.atual}</td>
       <td style="color:#64748b">${m.min} a ${m.max}</td>
       <td><span class="st-badge ${m.cls}">${m.status}</span></td>
@@ -431,21 +416,18 @@ function renderResumo() {
         <div class="dash-title">📈 Progresso Geral</div>
         <div class="prog-val">${pct}% Estudado/Revisado</div>
         <div class="bar-track-dark"><div class="bar-fill-dark" style="width:${pct}%"></div></div>
-        <div class="prog-sub">Método: 1/3 Estudo, 2/3 e 3/3 Revisões</div>
       </div>
     </div>
     
     <div class="dash-card" style="margin-bottom:24px">
       <div class="dash-title">📝 Notas e Previsões (Mínimo MM = 5.0)</div>
-      <div style="font-size:0.75rem;color:var(--slate);margin-bottom:10px">O Projeto Integrador vale 10% da nota global de cada matéria. Insira a nota do PI (de 0 a 10) aqui para o cálculo aplicar em todas:</div>
       <div class="grade-box" style="flex-direction:row; align-items:center; margin-bottom:16px">
-        <label>Projeto Integrador / Seminário:</label>
+        <label>Nota Projeto Integrador (Geral):</label>
         <input type="number" step="0.1" value="${userGrades.pi}" placeholder="--" onblur="updateGlobalPI(this.value)">
       </div>
-      
       <div style="overflow-x:auto">
         <table class="boletim-table">
-          <thead><tr><th>Disciplina</th><th>Média Parcial</th><th>Projeção (Min - Max)</th><th>Situação</th></tr></thead>
+          <thead><tr><th>Disciplina</th><th>Média Atual</th><th>Projeção</th><th>Situação</th></tr></thead>
           <tbody>${boletimRows}</tbody>
         </table>
       </div>
@@ -456,29 +438,25 @@ function renderResumo() {
 function renderDiscPanel(d) {
   const grades = getSubjectGrades(d.id);
   const m = calcSubjectMetrics(d.id);
-  
   const inputsHtml = d.assessments.map(av => `
     <div class="grade-box">
       <label>${av.label}</label>
       <input type="number" step="0.1" value="${grades[av.id]||''}" placeholder="--" onblur="updateGrade('${d.id}', '${av.id}', this.value)">
     </div>
   `).join('');
-
   const sectionsHtml = d.sections.map((s,si) => renderSection(d,s,si)).join('');
   
   return `
     <div class="disc-header">
       <div class="disc-title" style="color:${d.color}">${d.emoji} ${d.fullLabel}</div>
     </div>
-    
     <div class="grades-input-panel">
       ${inputsHtml}
       <div class="grade-result">
-        <div class="grade-result-lbl">Média Atual (c/ 10% PI)</div>
+        <div class="grade-result-lbl">Média Atual ${d.id==='imago'?'':'(c/ PI)'}</div>
         <div class="grade-result-val">${m.atual}</div>
       </div>
     </div>
-    
     ${sectionsHtml}
   `;
 }
@@ -486,7 +464,6 @@ function renderDiscPanel(d) {
 function renderSection(d, s, si) {
   const { score, max } = getProgress(s.items);
   const pct = max ? Math.round((score/max)*100) : 0;
-  
   const itemsHtml = s.items.map(item => `
     <div class="item ${item.status === 3 ? 'done' : ''}" data-id="${item.id}" draggable="true" ondragstart="dragStart(event, '${d.id}', ${si}, '${item.id}')">
       <div class="cb-status s-${item.status}" onclick="cycleStatus('${d.id}', ${si}, '${item.id}')">
@@ -496,7 +473,6 @@ function renderSection(d, s, si) {
       <div class="item-actions"><button class="del-btn" onclick="deleteItem('${d.id}', ${si}, '${item.id}')">🗑️</button></div>
     </div>
   `).join('');
-  
   return `<div class="section" id="sec-${d.id}-${si}">
     <div class="sec-head">
       <div class="sec-title"><span class="editable-title" contenteditable="true" onblur="updateTitle('${d.id}', ${si}, this.innerText)">${s.title}</span></div>
@@ -518,54 +494,19 @@ function renderAll() {
 }
 
 // ── INTERACTIONS ──
-function switchTab(id) {
-  activeTab = id;
-  renderAll();
-}
-
+function switchTab(id) { activeTab = id; renderAll(); }
 function cycleStatus(dId, si, itemId) {
   let d = userDisciplines.find(x => x.id === dId);
   let item = d.sections[si].items.find(i => i.id === itemId);
-  if(item) {
-    item.status = ((item.status || 0) + 1) % 4;
-    scheduleSave();
-    
-    // Atualiza apenas a sessão visualmente para não perder o scroll
-    const el = document.getElementById(`sec-${dId}-${si}`);
-    if(el) el.outerHTML = renderSection(d, d.sections[si], si);
-    
-    // Atualiza resumo invisivelmente se não for a aba ativa
-    if(activeTab === 'resumo') renderAll();
-  }
+  if(item) { item.status = ((item.status || 0) + 1) % 4; scheduleSave(); renderAll(); }
 }
-
-function updateGlobalPI(val) {
-  userGrades.pi = val;
-  scheduleSave();
-  renderAll();
-}
-
-function updateGrade(dId, avId, val) {
-  if(!userGrades[dId]) userGrades[dId] = {};
-  userGrades[dId][avId] = val;
-  scheduleSave();
-  renderAll();
-}
-
-function updateTitle(dId, si, text) {
-  text = text.trim(); if(!text) return;
-  userDisciplines.find(x => x.id === dId).sections[si].title = text;
-  scheduleSave();
-}
-
+function updateGlobalPI(val) { userGrades.pi = val; scheduleSave(); renderAll(); }
+function updateGrade(dId, avId, val) { if(!userGrades[dId]) userGrades[dId] = {}; userGrades[dId][avId] = val; scheduleSave(); renderAll(); }
+function updateTitle(dId, si, text) { text = text.trim(); if(!text) return; userDisciplines.find(x => x.id === dId).sections[si].title = text; scheduleSave(); }
 function addItem(dId, si) {
   let text = prompt('Nome do novo tópico:');
-  if(text && text.trim()) {
-    userDisciplines.find(x => x.id === dId).sections[si].items.push({ id: genId(), label: text.trim(), status: 0 });
-    scheduleSave(); renderAll();
-  }
+  if(text && text.trim()) { userDisciplines.find(x => x.id === dId).sections[si].items.push({ id: genId(), label: text.trim(), status: 0 }); scheduleSave(); renderAll(); }
 }
-
 function deleteItem(dId, si, itemId) {
   if(confirm('Excluir este tópico?')) {
     let s = userDisciplines.find(x => x.id === dId).sections[si];
@@ -576,31 +517,21 @@ function deleteItem(dId, si, itemId) {
 
 // ── DRAG & DROP ──
 let dragContext = null;
-function dragStart(e, dId, si, itemId) {
-  dragContext = { dId, si, itemId };
-  e.dataTransfer.setData('text/plain', itemId);
-  setTimeout(() => e.target.classList.add('dragging'), 0);
-}
+function dragStart(e, dId, si, itemId) { dragContext = { dId, si, itemId }; e.dataTransfer.setData('text/plain', itemId); setTimeout(() => e.target.classList.add('dragging'), 0); }
 function drop(e, targetDId, targetSi) {
-  e.preventDefault();
-  if(!dragContext || dragContext.dId !== targetDId) return alert("Arraste apenas na mesma matéria.");
-  
+  e.preventDefault(); if(!dragContext || dragContext.dId !== targetDId) return alert("Arraste na mesma matéria.");
   let d = userDisciplines.find(x => x.id === targetDId);
   let srcSec = d.sections[dragContext.si];
   let tgtSec = d.sections[targetSi];
-  
   let itemIdx = srcSec.items.findIndex(i => i.id === dragContext.itemId);
   if(itemIdx === -1) return;
-  
   let [movedItem] = srcSec.items.splice(itemIdx, 1);
-  
   let dropTarget = e.target.closest('.item');
   if(dropTarget) {
     let tIdx = tgtSec.items.findIndex(i => i.id === dropTarget.dataset.id);
     if(tIdx !== -1) tgtSec.items.splice(tIdx, 0, movedItem);
     else tgtSec.items.push(movedItem);
   } else { tgtSec.items.push(movedItem); }
-  
   dragContext = null; scheduleSave(); renderAll();
 }
 
@@ -608,16 +539,12 @@ function drop(e, targetDId, targetSi) {
 function startCountdown() {
   const target = new Date('2026-07-18T23:59:59').getTime();
   setInterval(() => {
-    const now = new Date().getTime();
-    const diff = target - now;
-    const el = document.getElementById('cd-val');
-    if(!el) return;
+    const now = new Date().getTime(); const diff = target - now;
+    const el = document.getElementById('cd-val'); if(!el) return;
     if(diff < 0) { el.textContent = "FIM!"; return; }
-    
     const d = Math.floor(diff / (1000 * 60 * 60 * 24));
     const h = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
     const m = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
-    
     el.textContent = `${d.toString().padStart(2,'0')}:${h.toString().padStart(2,'0')}:${m.toString().padStart(2,'0')}`;
   }, 1000);
 }
